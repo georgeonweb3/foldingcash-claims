@@ -1,5 +1,5 @@
 // Merkle tree for FoldingCash pull-based claims (OpenZeppelin-compatible).
-// Leaf: keccak256(abi.encodePacked(bytes20 hash160(claimantPubkey), uint256 amount))
+// Leaf: sha256(abi.encodePacked(bytes20 hash160(claimantPubkey), uint256 amount))
 //   - hash160(pubkey) = ripemd160(sha256(pubkey)), the P2PKH address hash.
 //     The on-chain verifier recomputes the leaf from the pubkey parameter
 //     with the hash160() builtin (evmCompat cannot abi.encode a pubkey),
@@ -11,7 +11,6 @@
 // proof verifies regardless of leaf order, and the on-chain verifier only needs
 // the standard sorted-pair loop — the same code the SolidCash pool contract runs.
 
-import { keccak_256 } from '@noble/hashes/sha3.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 
@@ -26,12 +25,12 @@ export function leafHash(pubkeyHex, amount) {
   const pkh = hash160(pubkeyHex);
   const amt = Buffer.alloc(32);
   amt.writeBigUInt64BE(BigInt(amount), 24); // uint256, big-endian
-  return Buffer.from(keccak_256(Buffer.concat([pkh, amt])));
+  return Buffer.from(sha256(Buffer.concat([pkh, amt])));
 }
 
 function hashPair(a, b) {
   const [x, y] = Buffer.compare(a, b) <= 0 ? [a, b] : [b, a];
-  return Buffer.from(keccak_256(Buffer.concat([x, y])));
+  return Buffer.from(sha256(Buffer.concat([x, y])));
 }
 
 export function buildTree(leaves) {
