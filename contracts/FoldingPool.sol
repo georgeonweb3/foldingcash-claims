@@ -7,12 +7,15 @@ pragma solidity ^0.8.20;
 ///         funds the pool once, and each folder claims whenever they choose
 ///         with a Merkle proof. No monthly push, no trust in the operator
 ///         after the root is set, no missed payouts.
-/// @dev BCH adaptations (SolidCash evmCompat):
-///      - Claimant identity is the 33-byte compressed pubkey. The leaf is
-///        keccak256(pubkey || amount), matching src/merkle.js exactly, so
-///        the off-chain proof generator and the on-chain verifier agree.
-///        The claimant authorizes with checkSig(sig, pubkey): only the key
-///        in the leaf can spend the claim transaction.
+/// @dev BCH adaptations (SolidCash evmCompat, lean lessons from AegisBCH):
+///      - Claimant identity is the 33-byte compressed pubkey, bound to the
+///        leaf through its hash160: leaf = keccak256(hash160(pubkey) ||
+///        amount), matching src/merkle.js exactly, so the off-chain proof
+///        generator and the on-chain verifier agree. (evmCompat cannot
+///        abi.encode a pubkey, but hash160(pubkey) is a builtin; the
+///        hash160 is also the P2PKH address hash, the identity that
+///        actually owns BCH.) The claimant authorizes with checkSig(sig,
+///        pubkey): only the key in the leaf can spend the claim tx.
 ///      - The pool holds native BCH in this PoC. Production swaps the
 ///        payout to the FLDCH CashToken (same claim logic, token transfer
 ///        instead of a native transfer) once FoldingCash wires its token.
@@ -20,36 +23,32 @@ pragma solidity ^0.8.20;
 ///        the stored admin pubkey). A root, once set for a month id, cannot
 ///        be overwritten — the operator cannot rug a published month.
 ///      - Double-claims are blocked by the claimed[leaf] set.
+///      - No events: SolidCash records state, not logs, and events cost
+///        bytes against the 10,000-byte per-input limit.
+///      - No custom errors: solidc 0.50.0 treats revert-with-custom-error
+///        as a no-op, so require() everywhere.
+///      - No fund(): a payable deposit-only function cannot measure
+///        msg.value in solidc 0.50.0 (see AegisBCH deposit note). The pool
+///        is funded at deploy with initialBalance; top-ups go through a
+///        deploy-time seed or a plain transfer to the satoshi container.
+///      - No auth modifiers: every function reads state once and
+///        authorizes inline (a modifier that reads the same entry the
+///        body writes emits duplicate stateful inputs).
 
 contract FoldingPool {
     pubkey public adminKey;
     mapping(uint256 => bytes32) public roots; // monthId => Merkle root
-    mapping(bytes32 => bool) public claimed; // leaf => claimed
-
-    event RootSet(uint256 indexed monthId, bytes32 root);
-    event Claimed(bytes32 indexed leaf, pubkey indexed claimant, uint256 amount);
-
-    error NotAdmin();
-    error NotClaimant();
-    error RootAlreadySet();
-    error RootNotSet();
-    error AlreadyClaimed();
-    error InvalidProof();
-    error InvalidAmount();
+    mapping(bytes32 => uint256) public claimed; // leaf => 1 if claimed (bool mapping writes fail in solidc 0.50.0; see README)
 
     constructor(pubkey _adminKey) {
         adminKey = _adminKey;
     }
 
-    /// @notice Fund the pool with BCH (anyone can top it up).
-    function fund() external payable {}
-
     /// @notice Operator publishes a month's Merkle root. One root per month, final.
     function setRoot(uint256 monthId, bytes32 root, sig s) external {
-        if (!checkSig(s, adminKey)) revert NotAdmin();
-        if (roots[monthId] != bytes32(0)) revert RootAlreadySet();
+        require(checkSig(s, adminKey));
+        require(roots[monthId] == bytes32(0));
         roots[monthId] = root;
-        emit RootSet(monthId, root);
     }
 
     /// @notice Claim earned rewards for a month. The claimant's signature
@@ -62,18 +61,17 @@ contract FoldingPool {
         sig s,
         address payable payout
     ) external {
-        if (!checkSig(s, claimant)) revert NotClaimant();
+        require(checkSig(s, claimant));
         bytes32 root = roots[monthId];
-        if (root == bytes32(0)) revert RootNotSet();
-        if (amount == 0) revert InvalidAmount();
+        require(root != bytes32(0));
+        require(amount != 0);
 
-        bytes32 leaf = keccak256(abi.encodePacked(claimant, amount));
-        if (claimed[leaf]) revert AlreadyClaimed();
-        if (!_verify(proof, root, leaf)) revert InvalidProof();
+        bytes32 leaf = keccak256(abi.encodePacked(hash160(claimant), amount));
+        require(claimed[leaf] == 0);
+        require(_verify(proof, root, leaf));
 
-        claimed[leaf] = true;
+        claimed[leaf] = 1;
         payout.transfer(amount);
-        emit Claimed(leaf, claimant, amount);
     }
 
     /// @notice Sorted-pair Merkle proof verification (OpenZeppelin convention,
@@ -87,6 +85,12 @@ contract FoldingPool {
                 : keccak256(abi.encodePacked(el, hash));
         }
         return hash == root;
+    }
+
+    /// @notice The leaf for (claimant, amount): keccak256(hash160(pubkey) || amount).
+    ///         Off-chain builders must produce the same leaf (src/merkle.js).
+    function leafOf(pubkey claimant, uint256 amount) external pure returns (bytes32) {
+        return keccak256(abi.encodePacked(hash160(claimant), amount));
     }
 
     function getRoot(uint256 monthId) external view returns (bytes32) {

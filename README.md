@@ -14,7 +14,7 @@ FoldingCash pays Folding@home folders in FLDCH with trusted monthly pushes: the 
 
 ## Leaf format (off-chain and on-chain agree)
 
-Leaf = `keccak256(pubkey || amount)` where pubkey is the claimant's 33-byte compressed secp256k1 key and amount is a uint256. Pairs are sorted before hashing (OpenZeppelin `MerkleProof` convention). The same code runs in `src/merkle.js` and in the contract's `_verify`, so a proof generated off-chain verifies on-chain.
+Leaf = `keccak256(hash160(pubkey) || amount)` where pubkey is the claimant's 33-byte compressed secp256k1 key, `hash160` is ripemd160(sha256(pubkey)) (the P2PKH address hash), and amount is a uint256. Pairs are sorted before hashing (OpenZeppelin `MerkleProof` convention). The same code runs in `src/merkle.js` and in the contract's `_verify`, so a proof generated off-chain verifies on-chain. (Changed Nov 14 from raw-pubkey leaves: evmCompat cannot `abi.encode` a `pubkey`, but `hash160(pubkey)` is a builtin — and the hash is the identity that actually owns BCH.)
 
 ## Run it
 
@@ -29,7 +29,7 @@ Expected: `15 passed, 0 failed.` — 8 folders' claims all verify, 4 tamper case
 
 - `src/merkle.js` — `leafHash`, `buildTree`, `getProof`, `verifyProof`, `buildClaims`, `verifyClaim`.
 - `demo.mjs` — one month of rewards for 8 folders (real secp256k1 keypairs) + full test suite.
-- `contracts/FoldingPool.sol` — SolidCash (evmCompat) pool contract draft, to compile once the SolidCash toolchain is up. Uncompiled as of writing; the Merkle logic is verified, the contract mirrors it.
+- `contracts/FoldingPool.sol` — SolidCash (evmCompat) pool contract. **Compiles at 6,579 bytes** (under the 10,000-byte limit) with the same toolchain as the AegisBCH guard (see the [aegis-bch repo](https://github.com/georgeonweb3/aegis-bch)). `leafOf` on-chain returns exactly the JS leaf. The full `claim` call is still unproven on the mock network (framework derive/preflight issue, bisected Nov 14 — no single piece is the culprit; needs a Chipnet run to settle). The claimed flag is a `uint256` (0/1), not a `bool`: writing `true` to a `mapping(bytes32 => bool)` fails the mock preflight in solidc 0.50.0.
 
 ## Production note
 
